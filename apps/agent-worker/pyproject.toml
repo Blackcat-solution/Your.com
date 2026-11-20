@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexusrelay-agent-worker"
+version = "0.1.0"
+description = "Durable RelayFlow worker and OACP payment middleware"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "pydantic-settings>=2.7,<3",
+  "alembic>=1.14,<2",
+  "sqlalchemy[asyncio]>=2.0.38,<3",
+  "psycopg[binary,pool]>=3.2,<4",
+  "temporalio>=1.12,<2",
+  "langgraph>=1.0,<2",
+  "langgraph-checkpoint-postgres>=3.2,<4",
+  "openai>=3.13,<4",
+  "mcp>=1.12,<2",
+  "httpx>=0.28,<1",
+  "PyJWT[crypto]>=2.10,<3",
+  "cryptography>=44,<47",
+  "stripe>=12,<16",
+  "redis>=5,<7",
+  "jsonschema>=4.23,<5",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+warn_return_any = false
+plugins = ["pydantic.mypy"]
+
