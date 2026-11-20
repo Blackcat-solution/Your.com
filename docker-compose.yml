@@ -1,0 +1,60 @@
+name: nexusrelay
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: nexusrelay
+      POSTGRES_USER: nexusrelay
+      POSTGRES_PASSWORD: nexusrelay
+    ports: ["5432:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data", "./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexusrelay -d nexusrelay"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+  temporal:
+    image: temporalio/temporal:1.5.1
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/var/lib/temporal/temporal.db", "--ui-port", "8233"]
+    ports: ["7233:7233", "8233:8233"]
+    volumes: ["temporal-data:/var/lib/temporal"]
+  api:
+    build:
+      context: .
+      dockerfile: apps/agent-worker/Dockerfile
+    env_file: [.env.local]
+    environment:
+      DATABASE_URL: postgresql+psycopg://nexusrelay:nexusrelay@postgres:5432/nexusrelay
+      REDIS_URL: redis://redis:6379/0
+      TEMPORAL_ADDRESS: temporal:7233
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    depends_on: [postgres, redis, temporal]
+  worker:
+    build:
+      context: .
+      dockerfile: apps/agent-worker/Dockerfile
+    env_file: [.env.local]
+    environment:
+      DATABASE_URL: postgresql+psycopg://nexusrelay:nexusrelay@postgres:5432/nexusrelay
+      REDIS_URL: redis://redis:6379/0
+      TEMPORAL_ADDRESS: temporal:7233
+    command: ["python", "-m", "app.worker"]
+    depends_on: [postgres, temporal]
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      AGENT_API_URL: http://api:8000
+      APP_ENV: development
+    ports: ["3000:3000"]
+    depends_on: [api]
+volumes:
+  postgres-data:
+  redis-data:
+  temporal-data:
