@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexusrelay.dev/oacp/0.1/schemas/checkout_token_exchange.json",
+  "title": "OACP Checkout Token Exchange Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "checkout_token", "merchant_id", "merchant_x25519_public_key", "idempotency_key"],
+  "properties": {
+    "protocol_version": {"const": "oacp/0.1"},
+    "checkout_token": {"type": "string", "pattern": "^oacp_tok_[A-Za-z0-9_-]{43}$", "description": "Opaque, single-use token; it is not a card number."},
+    "merchant_id": {"type": "string", "minLength": 1, "maxLength": 255},
+    "merchant_x25519_public_key": {"type": "string", "contentEncoding": "base64url", "description": "Merchant-generated ephemeral X25519 public key (32 bytes)."},
+    "idempotency_key": {"type": "string", "minLength": 16, "maxLength": 128}
+  }
+}
+

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexusrelay.dev/oacp/0.1/schemas/jsonrpc_envelope.json",
+  "title": "OACP JSON-RPC 2.0 Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["jsonrpc", "id", "method", "params"],
+  "properties": {
+    "jsonrpc": {"const": "2.0"},
+    "id": {"type": ["string", "integer"]},
+    "method": {"enum": ["merchant.manifest.get", "inventory.search", "cart.create", "cart.quote", "checkout.token.exchange"]},
+    "params": {"type": "object"}
+  }
+}
+

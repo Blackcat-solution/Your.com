@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --ink: #142322;
+  --muted: #66807b;
+  --line: #dbe7e3;
+  --paper: #f6faf8;
+  --green: #137565;
+  --green-dark: #0d5a4f;
+  --orange: #f1a85b;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: radial-gradient(ellipse at 80% 0%, #e8f7ef 0, transparent 38%), var(--paper);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+}
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
+

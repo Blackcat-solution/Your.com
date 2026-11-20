@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexusrelay.dev/oacp/0.1/schemas/checkout_token_exchange_response.json",
+  "title": "OACP Encrypted Checkout Credential Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "token_id", "ephemeral_public_key", "nonce", "ciphertext", "associated_data", "expires_at"],
+  "properties": {
+    "protocol_version": {"const": "oacp/0.1"},
+    "token_id": {"type": "string", "format": "uuid"},
+    "ephemeral_public_key": {"type": "string", "contentEncoding": "base64url"},
+    "nonce": {"type": "string", "contentEncoding": "base64url"},
+    "ciphertext": {"type": "string", "contentEncoding": "base64url", "description": "AES-256-GCM ciphertext. Never contains plaintext credentials in this response."},
+    "associated_data": {"type": "string"},
+    "expires_at": {"type": "string", "format": "date-time"}
+  }
+}
+

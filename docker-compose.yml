@@ -1,0 +1,111 @@
+name: nexusrelay
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: nexusrelay
+      POSTGRES_USER: nexusrelay
+      POSTGRES_PASSWORD: nexusrelay
+    ports: ["5432:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data", "./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexusrelay -d nexusrelay"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  temporal:
+    image: temporalio/temporal:1.5.1
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/var/lib/temporal/temporal.db", "--ui-port", "8233"]
+    ports: ["7233:7233", "8233:8233"]
+    volumes: ["temporal-data:/var/lib/temporal"]
+    healthcheck:
+      test: ["CMD", "temporal", "workflow", "list", "--address", "localhost:7233"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/agent-worker/Dockerfile
+    env_file: [.env.local]
+    environment:
+      DATABASE_URL: postgresql+psycopg://nexusrelay:nexusrelay@postgres:5432/nexusrelay
+    command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/agent-worker/Dockerfile
+    env_file: [.env.local]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      AUTH_MODE: ${AUTH_MODE:-dev}
+      DATABASE_URL: postgresql+psycopg://nexusrelay:nexusrelay@postgres:5432/nexusrelay
+      REDIS_URL: redis://redis:6379/0
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: nexusrelay
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      temporal: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/agent-worker/Dockerfile
+    env_file: [.env.local]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql+psycopg://nexusrelay:nexusrelay@postgres:5432/nexusrelay
+      REDIS_URL: redis://redis:6379/0
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: nexusrelay
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      temporal: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      AGENT_API_URL: http://api:8000
+      FRONTEND_WEBHOOK_SECRET: ${FRONTEND_WEBHOOK_SECRET:-replace-with-at-least-32-random-bytes}
+      APP_ENV: ${APP_ENV:-development}
+    ports: ["3000:3000"]
+    depends_on:
+      api: {condition: service_healthy}
+
+volumes:
+  postgres-data:
+  redis-data:
+  temporal-data:
+

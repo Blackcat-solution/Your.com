@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexusrelay.dev/oacp/0.1/schemas/merchant_manifest.json",
+  "title": "OACP Merchant Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "merchant_id", "merchant_name", "origin", "checkout_endpoint", "accepted_currencies", "mcc_category", "payment_capabilities", "signing_key_id", "signature"],
+  "properties": {
+    "protocol_version": {"const": "oacp/0.1"},
+    "merchant_id": {"type": "string", "minLength": 1, "maxLength": 255},
+    "merchant_name": {"type": "string", "minLength": 1, "maxLength": 255},
+    "origin": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "checkout_endpoint": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "accepted_currencies": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z]{3}$"}},
+    "mcc_category": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,79}$", "description": "Stripe Issuing authorization merchant_data.category identifier, not a free-form product category."},
+    "payment_capabilities": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["oacp_checkout_token_v1"]}},
+    "signing_key_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "signature": {"type": "string", "contentEncoding": "base64url", "description": "Ed25519 signature over the canonical manifest excluding this signature field."},
+    "inventory_endpoint": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "max_amount_minor": {"type": "integer", "minimum": 1}
+  }
+}
+
