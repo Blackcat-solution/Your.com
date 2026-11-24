@@ -40,8 +40,10 @@ class MerchantManifest(BaseModel):
     protocol_version: Literal["oacp/0.1"]
     merchant_id: str = Field(min_length=1, max_length=255)
     merchant_name: str = Field(min_length=1, max_length=255)
-    origin: HttpUrl
-    checkout_endpoint: HttpUrl
+    # Plain strings (not HttpUrl) so a signature covers exactly the bytes the
+    # merchant signed; pydantic would otherwise add a trailing slash to a bare host.
+    origin: str = Field(min_length=8, max_length=500, pattern=r"^https://\S+$")
+    checkout_endpoint: str = Field(min_length=8, max_length=500, pattern=r"^https://\S+$")
     accepted_currencies: list[str] = Field(min_length=1)
     mcc_category: str = Field(pattern=r"^[a-z][a-z0-9_]{2,79}$")
     payment_capabilities: list[str] = Field(min_length=1)

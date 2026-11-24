@@ -4,9 +4,12 @@ import hmac
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
@@ -15,12 +18,9 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from sqlalchemy import select
 
 from app.db import ApprovalKey, MerchantCredential, PurchaseIntent, Session
-from app.schemas import CartIntentCreate, CheckoutExchangeRequest
+from app.schemas import CartIntentCreate, CheckoutExchangeRequest, MerchantManifest
 from app.settings import get_settings
-
-
-def _canonical(value: dict) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+from app.signing import canonical_json, decode_signature, verify_signature
 
 
 def _b64url(data: bytes) -> str:
@@ -46,35 +46,40 @@ def _stripe_auth() -> tuple[str, str]:
     return key, ""
 
 
-async def _verify_manifest(manifest_model) -> dict:
+def verify_manifest_payload(manifest: dict[str, Any], signing_public_key: bytes) -> None:
+    """Verify the Ed25519 signature over the manifest exactly as received."""
+    signature_text = manifest.get("signature")
+    if not isinstance(signature_text, str):
+        raise ValueError("Merchant manifest is missing its signature")
+    unsigned = {key: value for key, value in manifest.items() if key != "signature"}
+    try:
+        Ed25519PublicKey.from_public_bytes(signing_public_key).verify(
+            _decode_b64url(signature_text), canonical_json(unsigned).encode()
+        )
+    except (InvalidSignature, ValueError) as exc:
+        raise PermissionError("Merchant manifest signature is invalid") from exc
+
+
+async def _verify_manifest(manifest_model: MerchantManifest) -> dict[str, Any]:
     manifest = manifest_model.model_dump(mode="json")
-    signature_text = manifest.pop("signature")
-    origin = str(manifest_model.origin).rstrip("/")
-    if not origin.startswith("https://") or not str(manifest_model.checkout_endpoint).startswith("https://"):
+    origin = manifest_model.origin.rstrip("/")
+    if not origin.startswith("https://") or not manifest_model.checkout_endpoint.startswith("https://"):
         raise ValueError("Merchant origin and checkout endpoint must use HTTPS")
-    if manifest_model.origin.host != manifest_model.checkout_endpoint.host:
+    if urlsplit(origin).hostname != urlsplit(manifest_model.checkout_endpoint).hostname:
         raise ValueError("Checkout endpoint host must match the registered merchant origin")
     async with Session() as session:
         trust = await session.get(MerchantCredential, manifest_model.merchant_id)
         if not trust or not trust.enabled or trust.origin.rstrip("/") != origin or trust.signing_key_id != manifest_model.signing_key_id:
             raise PermissionError("Merchant manifest is not registered or its origin/key does not match")
-    try:
-        signature = _decode_b64url(signature_text)
-        Ed25519PublicKey.from_public_bytes(trust.signing_public_key).verify(signature, _canonical(manifest).encode())
-    except Exception as exc:
-        from cryptography.exceptions import InvalidSignature
-        if isinstance(exc, (ValueError, InvalidSignature)):
-            raise PermissionError("Merchant manifest signature is invalid") from exc
-        raise
-    full_manifest = manifest_model.model_dump(mode="json")
-    return full_manifest
+        verify_manifest_payload(manifest, trust.signing_public_key)
+    return manifest
 
 
 async def create_cart_intent(user_id: str, body: CartIntentCreate) -> dict:
     manifest = await _verify_manifest(body.merchant_manifest)
     cart = body.model_dump(mode="json")
-    manifest_hash = hashlib.sha256(_canonical(manifest).encode()).hexdigest()
-    cart_hash = hashlib.sha256(_canonical(cart).encode()).hexdigest()
+    manifest_hash = hashlib.sha256(canonical_json(manifest).encode()).hexdigest()
+    cart_hash = hashlib.sha256(canonical_json(cart).encode()).hexdigest()
     intent_id = UUID(bytes=secrets.token_bytes(16), version=4)
     created = datetime.now(UTC)
     expires = created + timedelta(minutes=15)
@@ -123,15 +128,12 @@ async def create_cart_intent(user_id: str, body: CartIntentCreate) -> dict:
         "merchant_category": body.merchant_category,
         "lines": [line.model_dump() for line in body.lines],
         "expires_at": expires.isoformat(),
-        "signing_payload": _canonical(payload),
+        "signing_payload": canonical_json(payload),
     }
 
 
 async def approve_cart_intent(user_id: str, intent_id: UUID, signature_b64: str) -> dict:
-    try:
-        signature = base64.b64decode(signature_b64, validate=True)
-    except (ValueError, base64.binascii.Error) as exc:
-        raise ValueError("Signature must be base64 encoded") from exc
+    signature = decode_signature(signature_b64)
     settings = get_settings()
     async with Session() as session:
         intent = await session.scalar(select(PurchaseIntent).where(PurchaseIntent.id == intent_id, PurchaseIntent.user_id == user_id).with_for_update())
@@ -146,13 +148,8 @@ async def approve_cart_intent(user_id: str, intent_id: UUID, signature_b64: str)
         payload = intent.cart_payload.get("_signing_payload")
         if not isinstance(payload, dict):
             raise RuntimeError("Purchase signing payload is missing")
-        try:
-            Ed25519PublicKey.from_public_bytes(key.public_key).verify(signature, _canonical(payload).encode())
-        except Exception as exc:
-            from cryptography.exceptions import InvalidSignature
-            if isinstance(exc, InvalidSignature):
-                raise PermissionError("Purchase approval signature is invalid") from exc
-            raise
+        if not verify_signature(key.public_key, payload, signature):
+            raise PermissionError("Purchase approval signature is invalid")
         if not settings.stripe_issuing_cardholder_id:
             raise RuntimeError("STRIPE_ISSUING_CARDHOLDER_ID must be configured")
         intent.status = "issuing"
@@ -208,6 +205,28 @@ async def approve_cart_intent(user_id: str, intent_id: UUID, signature_b64: str)
     return {"id": str(intent_id), "status": "approved", "checkout_token": token, "expires_at": expires_at.isoformat(), "amount_minor": intent.amount_minor, "currency": intent.currency, "merchant_id": intent.merchant_id}
 
 
+def seal_checkout_envelope(
+    *,
+    token_id: UUID,
+    merchant_public_key: X25519PublicKey,
+    plaintext: dict[str, Any],
+    associated_data: dict[str, Any],
+) -> dict[str, str]:
+    """Encrypt card data to the merchant key: X25519, HKDF-SHA256, AES-256-GCM."""
+    aad = canonical_json(associated_data).encode()
+    ephemeral = X25519PrivateKey.generate()
+    shared = ephemeral.exchange(merchant_public_key)
+    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=token_id.bytes, info=b"nexusrelay-oacp-0.1-checkout").derive(shared)
+    nonce = secrets.token_bytes(12)
+    ciphertext = AESGCM(key).encrypt(nonce, json.dumps(plaintext, separators=(",", ":")).encode(), aad)
+    return {
+        "ephemeral_public_key": _b64url(ephemeral.public_key().public_bytes_raw()),
+        "nonce": _b64url(nonce),
+        "ciphertext": _b64url(ciphertext),
+        "associated_data": aad.decode(),
+    }
+
+
 async def exchange_checkout_token(request: CheckoutExchangeRequest, merchant_secret: str | None) -> dict:
     if not merchant_secret:
         raise PermissionError("Merchant authentication failed")
@@ -216,7 +235,7 @@ async def exchange_checkout_token(request: CheckoutExchangeRequest, merchant_sec
     except (ValueError, TypeError) as exc:
         raise ValueError("merchant_x25519_public_key must encode a 32-byte X25519 public key") from exc
     token_hash = hashlib.sha256(request.checkout_token.encode()).hexdigest()
-    exchange_request_hash = hashlib.sha256(_canonical({
+    exchange_request_hash = hashlib.sha256(canonical_json({
         "merchant_id": request.merchant_id,
         "merchant_x25519_public_key": request.merchant_x25519_public_key,
     }).encode()).hexdigest()
@@ -289,7 +308,6 @@ async def exchange_checkout_token(request: CheckoutExchangeRequest, merchant_sec
                 await session.commit()
         raise RuntimeError("Stripe did not provide retrievable virtual card details")
     token_id = intent_id
-    now = datetime.now(UTC).isoformat()
     aad_obj = {
         "protocol_version": "oacp/0.1",
         "token_id": str(token_id),
@@ -297,31 +315,26 @@ async def exchange_checkout_token(request: CheckoutExchangeRequest, merchant_sec
         "order_id": order_id,
         "amount_minor": amount_minor,
         "currency": currency,
-        "issued_at": now,
+        "issued_at": datetime.now(UTC).isoformat(),
     }
-    aad = _canonical(aad_obj).encode()
-    ephemeral = X25519PrivateKey.generate()
-    shared = ephemeral.exchange(merchant_public)
-    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=token_id.bytes, info=b"nexusrelay-oacp-0.1-checkout").derive(shared)
-    nonce = secrets.token_bytes(12)
-    plaintext = json.dumps({
-        "pan": pan,
-        "cvc": cvc,
-        "exp_month": card_data["exp_month"],
-        "exp_year": card_data["exp_year"],
-        "amount_minor": amount_minor,
-        "currency": currency,
-        "order_id": order_id,
-    }, separators=(",", ":")).encode()
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
-    public_bytes = ephemeral.public_key().public_bytes_raw()
+    sealed = seal_checkout_envelope(
+        token_id=token_id,
+        merchant_public_key=merchant_public,
+        plaintext={
+            "pan": pan,
+            "cvc": cvc,
+            "exp_month": card_data["exp_month"],
+            "exp_year": card_data["exp_year"],
+            "amount_minor": amount_minor,
+            "currency": currency,
+            "order_id": order_id,
+        },
+        associated_data=aad_obj,
+    )
     result = {
         "protocol_version": "oacp/0.1",
         "token_id": str(token_id),
-        "ephemeral_public_key": _b64url(public_bytes),
-        "nonce": _b64url(nonce),
-        "ciphertext": _b64url(ciphertext),
-        "associated_data": aad.decode(),
+        **sealed,
         "expires_at": expires_at.isoformat(),
     }
     async with Session() as session:

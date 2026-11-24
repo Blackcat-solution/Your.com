@@ -2,40 +2,12 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 
-type KeyBundle = { privateKey: CryptoKey; publicKey: string };
+import { getOrCreateApprovalKey, stableJson, toBase64, type ApprovalKey } from "@/lib/approvalKey";
+
+type KeyBundle = ApprovalKey;
 type Intent = { id: string; merchant_name: string; merchant_id: string; order_id: string; amount_minor: number; currency: string; merchant_category: string; signing_payload: string };
 type Issued = { checkout_token: string; expires_at: string; amount_minor: number; currency: string; merchant_id: string };
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    return `{${Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableJson(obj[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-function encode(bytes: Uint8Array): string { let binary = ""; bytes.forEach((value) => { binary += String.fromCharCode(value); }); return btoa(binary); }
-async function keyBundle(): Promise<KeyBundle> {
-  const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const open = indexedDB.open("nexusrelay-approval-keys", 1);
-    open.onupgradeneeded = () => open.result.createObjectStore("keys");
-    open.onsuccess = () => resolve(open.result);
-    open.onerror = () => reject(open.error);
-  });
-  const cached = await new Promise<KeyBundle | undefined>((resolve, reject) => {
-    const get = db.transaction("keys", "readonly").objectStore("keys").get("active");
-    get.onsuccess = () => resolve(get.result as KeyBundle | undefined);
-    get.onerror = () => reject(get.error);
-  });
-  if (cached) return cached;
-  const pair = await crypto.subtle.generateKey({ name: "Ed25519" } as Algorithm, false, ["sign", "verify"]) as CryptoKeyPair;
-  const bundle = { privateKey: pair.privateKey, publicKey: encode(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))) };
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction("keys", "readwrite"); tx.objectStore("keys").put(bundle, "active");
-    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
-  });
-  return bundle;
-}
 async function api(path: string, body?: unknown): Promise<Response> {
   return fetch(`/api/${path}`, {
     method: body === undefined ? "GET" : "POST",
@@ -65,7 +37,7 @@ export default function CommercePage() {
 
   useEffect(() => {
     let live = true;
-    void keyBundle().then(async (bundle) => {
+    void getOrCreateApprovalKey().then(async (bundle) => {
       const registered = await api("approval-keys", { public_key: bundle.publicKey });
       if (!registered.ok) throw new Error("Register the browser approval key before purchasing");
       if (live) keyRef.current = bundle;
@@ -112,7 +84,7 @@ export default function CommercePage() {
     setBusy(true); setError("");
     try {
       const signature = new Uint8Array(await crypto.subtle.sign("Ed25519", keyRef.current.privateKey, new TextEncoder().encode(stableJson(JSON.parse(intent.signing_payload)))));
-      const response = await api(`commerce/cart-intents/${intent.id}/approve`, { signature: encode(signature) });
+      const response = await api(`commerce/cart-intents/${intent.id}/approve`, { signature: toBase64(signature) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail ?? "Stripe Issuing did not approve card creation");
       setIssued(result as Issued);

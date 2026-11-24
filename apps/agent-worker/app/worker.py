@@ -12,8 +12,8 @@ from app.activities import (
     resume_graph_activity,
     set_run_status_activity,
 )
-from app.db import init_db
 from app.commerce.service import expire_unused_cards
+from app.db import init_db
 from app.settings import get_settings
 from app.workflows import RelayFlowWorkflow
 

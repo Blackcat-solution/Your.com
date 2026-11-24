@@ -1,28 +1,44 @@
 import asyncio
 import base64
+import binascii
 import hashlib
 import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import AsyncIterator
 from uuid import UUID, uuid4
 
-from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
-from temporalio.client import Client
+from temporalio.client import Client, WorkflowHandle
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError
-from temporalio.client import WorkflowHandle
 
 from app.auth import current_user
 from app.commerce.api import router as commerce_router
-from app.db import ApprovalKey, ApprovalRequest, Run, RunEvent, Session, append_event, engine, init_db
+from app.db import (
+    ApprovalKey,
+    ApprovalRequest,
+    Run,
+    RunEvent,
+    Session,
+    append_event,
+    engine,
+    init_db,
+)
 from app.oauth import router as oauth_router
-from app.schemas import ApprovalDecision, ApprovalKeyCreate, ApprovalView, OAuthTokenWrite, RunCreate, RunView
+from app.schemas import (
+    ApprovalDecision,
+    ApprovalKeyCreate,
+    ApprovalView,
+    OAuthTokenWrite,
+    RunCreate,
+    RunView,
+)
 from app.settings import get_settings
+from app.signing import decode_signature, verify_signature
 from app.token_vault import OAuthTokenVault
 from app.workflows import ApprovalSignal, RelayFlowWorkflow, RelayInput
 
@@ -90,7 +106,7 @@ async def register_approval_key(body: ApprovalKeyCreate, user_id: str = Depends(
     try:
         raw_key = base64.b64decode(body.public_key, validate=True)
         Ed25519PublicKey.from_public_bytes(raw_key)
-    except (ValueError, base64.binascii.Error) as exc:
+    except (ValueError, binascii.Error) as exc:
         raise HTTPException(status_code=422, detail="Expected a base64-encoded Ed25519 public key") from exc
     fingerprint = hashlib.sha256(raw_key).hexdigest()
     async with Session() as session:
@@ -225,9 +241,9 @@ async def get_approval(approval_id: UUID, user_id: str = Depends(current_user)) 
 async def decide_approval(approval_id: UUID, body: ApprovalDecision, request: Request, user_id: str = Depends(current_user)) -> dict[str, str]:
     await _rate_limit(request, user_id, "approval", limit=60)
     try:
-        signature = base64.b64decode(body.signature, validate=True)
-    except (ValueError, base64.binascii.Error) as exc:
-        raise HTTPException(status_code=422, detail="Signature must be base64 encoded") from exc
+        signature = decode_signature(body.signature)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     async with Session() as session:
         approval = await session.scalar(select(ApprovalRequest).where(ApprovalRequest.id == approval_id, ApprovalRequest.user_id == user_id))
         key = await session.get(ApprovalKey, user_id)
@@ -242,11 +258,8 @@ async def decide_approval(approval_id: UUID, body: ApprovalDecision, request: Re
             raise HTTPException(status_code=409, detail="Approval is no longer pending")
         else:
             signed_payload = {**approval.signing_payload, "decision": body.decision}
-            message = json.dumps(signed_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-            try:
-                Ed25519PublicKey.from_public_bytes(key.public_key).verify(signature, message)
-            except InvalidSignature as exc:
-                raise HTTPException(status_code=401, detail="Approval signature is invalid") from exc
+            if not verify_signature(key.public_key, signed_payload, signature):
+                raise HTTPException(status_code=401, detail="Approval signature is invalid")
             approval.status = "decided"
             approval.decision = body.decision
             run_id = approval.run_id

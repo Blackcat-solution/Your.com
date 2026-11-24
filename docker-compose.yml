@@ -17,11 +17,32 @@ services:
     image: redis:7-alpine
     ports: ["6379:6379"]
     volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
   temporal:
     image: temporalio/temporal:1.5.1
     command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/var/lib/temporal/temporal.db", "--ui-port", "8233"]
     ports: ["7233:7233", "8233:8233"]
     volumes: ["temporal-data:/var/lib/temporal"]
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "localhost:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/agent-worker/Dockerfile
+    env_file: [.env.local]
+    environment:
+      DATABASE_URL: postgresql+psycopg://nexusrelay:nexusrelay@postgres:5432/nexusrelay
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
   api:
     build:
       context: .
@@ -33,7 +54,13 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports: ["8000:8000"]
-    depends_on: [postgres, redis, temporal]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
   worker:
     build:
       context: .
@@ -44,7 +71,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       TEMPORAL_ADDRESS: temporal:7233
     command: ["python", "-m", "app.worker"]
-    depends_on: [postgres, temporal]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_healthy
   web:
     build:
       context: .
@@ -53,7 +84,9 @@ services:
       AGENT_API_URL: http://api:8000
       APP_ENV: development
     ports: ["3000:3000"]
-    depends_on: [api]
+    depends_on:
+      api:
+        condition: service_started
 volumes:
   postgres-data:
   redis-data:

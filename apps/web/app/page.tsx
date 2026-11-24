@@ -2,6 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
+import { getOrCreateApprovalKey, stableJson, toBase64, type ApprovalKey } from "@/lib/approvalKey";
+
 type FeedItem = { id: string; kind: string; message: string; at: string; detail?: string };
 type Approval = {
   id: string;
@@ -11,51 +13,7 @@ type Approval = {
   expires_at: string;
   signing_payload: string;
 };
-type KeyBundle = { privateKey: CryptoKey; publicKey: string };
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    return `{${Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableJson(obj[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-async function openKeyStore(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("nexusrelay-approval-keys", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("keys");
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function getOrCreateKey(): Promise<KeyBundle> {
-  const db = await openKeyStore();
-  const stored = await new Promise<KeyBundle | undefined>((resolve, reject) => {
-    const request = db.transaction("keys", "readonly").objectStore("keys").get("active");
-    request.onsuccess = () => resolve(request.result as KeyBundle | undefined);
-    request.onerror = () => reject(request.error);
-  });
-  if (stored) return stored;
-  const pair = await crypto.subtle.generateKey({ name: "Ed25519" } as Algorithm, false, ["sign", "verify"]) as CryptoKeyPair;
-  const publicBytes = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-  const bundle = { privateKey: pair.privateKey, publicKey: toBase64(publicBytes) };
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction("keys", "readwrite");
-    transaction.objectStore("keys").put(bundle, "active");
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-  });
-  return bundle;
-}
+type KeyBundle = ApprovalKey;
 
 async function api(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
@@ -81,7 +39,7 @@ export default function Home() {
     let live = true;
     void (async () => {
       try {
-        const bundle = await getOrCreateKey();
+        const bundle = await getOrCreateApprovalKey();
         const response = await api("approval-keys", { method: "POST", body: JSON.stringify({ public_key: bundle.publicKey }) });
         if (!response.ok) throw new Error((await response.json()).detail ?? "Could not register approval key");
         if (live) {

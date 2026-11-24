@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nexusrelay_mcp import StreamableMCPClient
+
 from app.settings import Settings, get_settings
 from app.token_vault import OAuthTokenVault
 

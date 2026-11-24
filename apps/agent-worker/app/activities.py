@@ -11,7 +11,7 @@ import httpx
 from sqlalchemy import select
 from temporalio import activity
 
-from app.db import ApprovalRequest, Run, RunEvent, Session, append_event
+from app.db import ApprovalRequest, Run, Session, append_event
 from app.graph import invoke_graph
 from app.settings import get_settings
 

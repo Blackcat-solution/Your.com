@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+python/oacp_spec/__init__.py
+python/oacp_spec.egg-info/PKG-INFO
+python/oacp_spec.egg-info/SOURCES.txt
+python/oacp_spec.egg-info/dependency_links.txt
+python/oacp_spec.egg-info/requires.txt
+python/oacp_spec.egg-info/top_level.txt

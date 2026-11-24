@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: oacp-spec
+Version: 0.1.0
+Summary: OACP 0.1 protocol schemas and validation helpers
+Requires-Python: >=3.12
+Requires-Dist: jsonschema<5,>=4.23

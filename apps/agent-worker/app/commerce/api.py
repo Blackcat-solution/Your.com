@@ -1,4 +1,5 @@
 import base64
+import binascii
 import hashlib
 import hmac
 from uuid import UUID
@@ -8,7 +9,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from app.auth import current_user
 from app.commerce.service import approve_cart_intent, create_cart_intent, exchange_checkout_token
 from app.db import MerchantCredential, Session
-from app.schemas import CartIntentCreate, CheckoutExchangeRequest, CheckoutExchangeView, MerchantTrustWrite, PurchaseApproval
+from app.schemas import (
+    CartIntentCreate,
+    CheckoutExchangeRequest,
+    CheckoutExchangeView,
+    MerchantTrustWrite,
+    PurchaseApproval,
+)
 from app.settings import get_settings
 
 router = APIRouter(prefix="/v1/commerce", tags=["OACP"])
@@ -68,7 +75,7 @@ async def register_merchant_trust(
         public_key = base64.urlsafe_b64decode(body.signing_public_key + "=" * (-len(body.signing_public_key) % 4))
         if len(public_key) != 32 or not str(body.origin).startswith("https://"):
             raise ValueError("Invalid public key or origin")
-    except (ValueError, base64.binascii.Error) as exc:
+    except (ValueError, binascii.Error) as exc:
         raise HTTPException(status_code=422, detail="Expected a base64url Ed25519 public key and HTTPS origin") from exc
     fingerprint = hashlib.sha256(public_key).hexdigest()
     async with Session() as session:

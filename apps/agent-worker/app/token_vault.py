@@ -1,7 +1,9 @@
 import base64
+import binascii
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -20,7 +22,7 @@ class OAuthTokenVault:
     def _cipher(self) -> AESGCM:
         try:
             key = base64.b64decode(self.settings.token_vault_key_b64, validate=True)
-        except (ValueError, base64.binascii.Error) as exc:
+        except (ValueError, binascii.Error) as exc:
             raise RuntimeError("TOKEN_VAULT_KEY_B64 must be a base64-encoded 32-byte key") from exc
         if len(key) != 32:
             raise RuntimeError("TOKEN_VAULT_KEY_B64 must decode to exactly 32 bytes")
@@ -29,6 +31,22 @@ class OAuthTokenVault:
     @staticmethod
     def _aad(user_id: str, provider: str) -> bytes:
         return f"nexusrelay-oauth-v1:{user_id}:{provider}".encode()
+
+    def seal(self, user_id: str, provider: str, payload: dict[str, Any]) -> tuple[bytes, bytes]:
+        """Encrypt a token payload; the AAD binds the ciphertext to its owner."""
+        nonce = secrets.token_bytes(12)
+        ciphertext = self._cipher().encrypt(
+            nonce,
+            json.dumps(payload, separators=(",", ":")).encode(),
+            self._aad(user_id, provider),
+        )
+        return nonce, ciphertext
+
+    def unseal(self, user_id: str, provider: str, nonce: bytes, ciphertext: bytes) -> dict[str, Any]:
+        payload: dict[str, Any] = json.loads(
+            self._cipher().decrypt(nonce, ciphertext, self._aad(user_id, provider))
+        )
+        return payload
 
     async def store(
         self,
@@ -43,12 +61,11 @@ class OAuthTokenVault:
             raise ValueError("Unsupported OAuth provider")
         if not access_token or len(access_token) > 16_384:
             raise ValueError("Access token is empty or too long")
-        nonce = secrets.token_bytes(12)
-        payload = json.dumps(
+        nonce, ciphertext = self.seal(
+            user_id,
+            provider,
             {"access_token": access_token, "refresh_token": refresh_token},
-            separators=(",", ":"),
-        ).encode()
-        ciphertext = self._cipher().encrypt(nonce, payload, self._aad(user_id, provider))
+        )
         async with Session() as session:
             row = await session.scalar(
                 select(OAuthCredential).where(OAuthCredential.user_id == user_id, OAuthCredential.provider == provider)
@@ -79,7 +96,7 @@ class OAuthTokenVault:
             )
             if row is None:
                 raise RuntimeError(f"No vaulted OAuth credential for {provider}")
-            payload = json.loads(self._cipher().decrypt(row.nonce, row.ciphertext, self._aad(user_id, provider)))
+            payload = self.unseal(user_id, provider, row.nonce, row.ciphertext)
             if row.expires_at is None or row.expires_at > datetime.now(UTC) + timedelta(minutes=2):
                 return payload["access_token"]
             refresh_token = payload.get("refresh_token")

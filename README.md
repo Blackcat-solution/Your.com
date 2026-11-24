@@ -5,7 +5,7 @@ NexusRelay is an open-source starter for two connected systems:
 1. **RelayFlow** runs long tasks through research, drafting, and separately approved external actions.
 2. **OACP 0.1** defines merchant discovery and cart intent, then exchanges a signed purchase approval for a one-time, spend-capped Stripe Issuing card.
 
-This repository implements the starter monorepo, durable worker, browser workbench, token vault, OAuth authorization-code flow, OACP schemas, Stripe Issuing service, and CI. It does not claim PCI, card-network, financial-services, or identity-provider certification.
+This repository implements the monorepo, durable worker, browser workbench, token vault, OAuth authorization-code flow, OACP schemas with validation and a merchant reference client, Stripe Issuing service, test suite, and CI. It does not claim PCI, card-network, financial-services, or identity-provider certification.
 
 ## Repository layout
 
@@ -27,7 +27,8 @@ apps/
   web/                       Next.js App Router + Tailwind workbench and OACP approval UI
 packages/
   mcp-connectors/            Reusable Streamable HTTP MCP client
-  oacp-spec/                 OACP 0.1 protocol, schemas, and exchange profile
+  oacp-merchant/             Merchant reference client: signed manifests, token redemption
+  oacp-spec/                 OACP 0.1 protocol, schemas, validation helpers
 infra/
   postgres/                   Local PostgreSQL initialization
 docker-compose.yml            PostgreSQL, Redis, Temporal, API, worker, Next.js
@@ -96,6 +97,17 @@ npm install
 npm --workspace apps/web run dev
 ```
 
+## Tests
+
+The suite covers signature canonicalisation, merchant-manifest verification, the encrypted OAuth token vault, checkout tokens and the payment envelope, plus conformance of every normative OACP schema.
+
+```bash
+python -m pip install -e packages/oacp-spec -e packages/oacp-merchant -e packages/mcp-connectors -e apps/agent-worker
+pytest apps/agent-worker/tests -q
+```
+
+Tests generate their own keys and need no database, Stripe account, or network access.
+
 ## Configuration notes
 
 | Variable group | Purpose |
@@ -135,6 +147,20 @@ After a valid `approve_purchase` signature, the service creates a Stripe Issuing
 The browser receives only an opaque short-lived checkout token. The merchant must authenticate to `/v1/commerce/checkout-token/exchange` with its registered credential and an ephemeral X25519 public key. The server retrieves PAN/CVC from Stripe only during exchange, encrypts them immediately with X25519 + HKDF-SHA256 + AES-256-GCM to that merchant key, stores only the ciphertext envelope for idempotent retry, and never returns plaintext card data to the browser or agent. The merchant token is single-use and merchant-bound; unused cards are cancelled by the worker's expiry sweep.
 
 Before accepting carts, register the merchant's HTTPS origin, manifest signing key, and exchange credential at `PUT /v1/commerce/merchants/{merchant_id}/trust` using `X-OACP-Admin-Token`. Keep the merchant private signing and X25519 keys on the merchant side. The test UI requires a real signed merchant manifest; it does not make the demo merchant trusted automatically.
+
+The `oacp-merchant` package is the merchant-side reference for the same profile:
+
+```bash
+python -m pip install -e packages/oacp-spec -e packages/oacp-merchant
+oacp-merchant keys --merchant-id demo-merchant --signing-key-id merchant-key-1 --out merchant-keys.json
+oacp-merchant manifest --keys merchant-keys.json --merchant-name "Demo Merchant" \
+  --origin https://shop.example.com --checkout-endpoint https://shop.example.com/checkout \
+  --category computer_software_stores
+OACP_ADMIN_TOKEN=... oacp-merchant trust --keys merchant-keys.json --origin https://shop.example.com
+oacp-merchant redeem --keys merchant-keys.json --token oacp_tok_...
+```
+
+`keys` writes the Ed25519 signing key, the X25519 decryption key and the exchange credential to one private file. `manifest` prints a manifest whose signature covers the exact JSON object the API receives. `trust` registers the origin, manifest key and exchange credential. `redeem` authenticates with the exchange credential, decrypts the envelope inside the merchant, and prints the card details for its own PCI-scoped checkout.
 
 **PCI scope:** retrieving PAN/CVC through Stripe's API can put the payment service in PCI scope, especially when issuing cards to users. Stripe recommends Issuing Elements for cardholder display and notes the PCI requirements for service providers. This exchange implementation therefore requires a formal security and PCI review before live use. Stripe Issuing account eligibility and regional availability also apply. See [Stripe card details guidance](https://docs.stripe.com/issuing/cards/virtual) and [Stripe Issuing card controls](https://docs.stripe.com/api/issuing/cards/create).
 
