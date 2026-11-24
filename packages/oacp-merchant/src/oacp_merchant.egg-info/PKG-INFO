@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: oacp-merchant
-Version: 0.1.0
-Summary: Merchant-side OACP 0.1 reference client: signed manifests and checkout token redemption
-Requires-Python: >=3.12
-Requires-Dist: cryptography<47,>=44
-Requires-Dist: httpx<1,>=0.28
-Requires-Dist: oacp-spec<1,>=0.1

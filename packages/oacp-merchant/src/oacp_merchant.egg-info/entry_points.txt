@@ -1,2 +1,0 @@
-[console_scripts]
-oacp-merchant = oacp_merchant.cli:main

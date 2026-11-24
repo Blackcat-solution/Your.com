@@ -1,3 +1,0 @@
-cryptography<47,>=44
-httpx<1,>=0.28
-oacp-spec<1,>=0.1
